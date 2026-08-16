@@ -8,39 +8,54 @@
 body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;background:#f7f4ec;color:#3d342a;margin:0;padding:18px}
 .wrap{max-width:720px;margin:auto}.card{background:#fff;border:1px solid #e5ddcf;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(0,0,0,.06)}
 h1{font-size:22px;margin:0 0 8px}.note{font-size:13px;line-height:1.6;color:#6d6256}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}.stat{background:#f3eee4;border-radius:12px;padding:10px;text-align:center}.n{font-weight:900;font-size:20px}.l{font-size:11px;color:#776b5e}
-button{width:100%;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:800;margin-top:10px}#start{background:#2f6f4e;color:#fff}.save{background:#e9f3ed;color:#245c40}.save:disabled{opacity:.45}.bar{height:10px;background:#e8e2d8;border-radius:999px;overflow:hidden;margin-top:12px}.bar i{display:block;height:100%;width:0;background:#2f6f4e}.log{white-space:pre-wrap;background:#2d2d2d;color:#eee;border-radius:10px;padding:10px;font:12px/1.5 ui-monospace,monospace;max-height:260px;overflow:auto;margin-top:12px}.warn{color:#9a4e2c}
+button{width:100%;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:800;margin-top:10px}#start{background:#2f6f4e;color:#fff}.save{background:#e9f3ed;color:#245c40}.save:disabled{opacity:.45}.sub{background:#f2eee7;color:#65594c}.danger{background:#fff1f0;color:#a13d32;border:1px solid #edcbc7}.bar{height:10px;background:#e8e2d8;border-radius:999px;overflow:hidden;margin-top:12px}.bar i{display:block;height:100%;width:0;background:#2f6f4e}.log{white-space:pre-wrap;background:#2d2d2d;color:#eee;border-radius:10px;padding:10px;font:12px/1.5 ui-monospace,monospace;max-height:300px;overflow:auto;margin-top:12px}.warn{color:#9a4e2c}.ok{color:#2f6f4e;font-weight:800}.failed{margin-top:10px;padding:10px;border-radius:10px;background:#fff7ed;color:#8a4b24;font-size:12px;line-height:1.5;display:none}
 </style>
 </head><body><div class="wrap"><div class="card">
 <h1>🍴 全国飲食店マスタ作成ツール</h1>
-<div class="note">OpenStreetMap / Overpass から、店名と住所が登録されているレストラン・カフェ・ファストフードを都道府県ごとに取得します。取得はこの作成ツールでだけ行い、公開アプリは保存済みJSONを表示するだけです。</div>
-<div class="stats"><div class="stat"><div class="n" id="pref">0/47</div><div class="l">都道府県</div></div><div class="stat"><div class="n" id="count">0</div><div class="l">住所付き飲食店</div></div><div class="stat"><div class="n" id="req">0</div><div class="l">APIリクエスト</div></div></div>
+<div class="note">OpenStreetMap / Overpass から、店名と住所が登録されているレストラン・カフェ・ファストフードを都道府県ごとに取得します。<b>1県で失敗しても止まらず次へ進み、取得済みデータはこの端末に自動保存</b>します。</div>
+<div class="stats"><div class="stat"><div class="n" id="pref">0/47</div><div class="l">処理済み都道府県</div></div><div class="stat"><div class="n" id="count">0</div><div class="l">住所付き飲食店</div></div><div class="stat"><div class="n" id="req">0</div><div class="l">APIリクエスト</div></div></div>
 <div class="bar"><i id="bar"></i></div>
 <button id="start">▶ 全国取得を開始</button>
 <button class="save" id="save1" disabled>⬇ restaurants-1.json を保存</button>
 <button class="save" id="save2" disabled>⬇ restaurants-2.json を保存</button>
-<div class="note warn">取得には時間がかかります。Safariを閉じたり画面をロックしないでください。Overpassが混雑している場合は自動で待って再試行します。</div>
-<div class="log" id="log">待機中</div>
+<button class="sub" id="retry" style="display:none">🔄 失敗した県だけ再取得</button>
+<button class="danger" id="reset">🗑 保存済み進捗をリセット</button>
+<div class="note warn">Safariを閉じたり画面をロックすると通信は止まりますが、<b>次に開いた時は保存済みの続きから再開</b>できます。429 / 504 / 通信失敗が続く県はいったん飛ばして、最後に再取得できます。</div>
+<div class="failed" id="failed"></div>
+<div class="log" id="log">保存済み進捗を確認中…</div>
 </div></div>
 <script>
 const prefs=Array.from({length:47},(_,i)=>`JP-${String(i+1).padStart(2,'0')}`);
-let all=[],requests=0,running=false;
+const DB_NAME='restaurantBuilderDB_v2', STORE='state', STATE_KEY='master';
+let all=[],requests=0,running=false,completed=[],failed=[];
 const $=id=>document.getElementById(id); const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function log(s){$('log').textContent+=`\n${s}`;$('log').scrollTop=$('log').scrollHeight}
 function addr(t={}){if(t['addr:full'])return String(t['addr:full']).trim();const p=[t['addr:postcode'],t['addr:province']||t['addr:prefecture'],t['addr:city'],t['addr:suburb'],t['addr:quarter'],t['addr:neighbourhood'],t['addr:street'],t['addr:block_number'],t['addr:housenumber']].filter(Boolean).map(v=>String(v).trim());return [...new Set(p)].join(' ')}
+function openDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open(DB_NAME,1);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains(STORE))r.result.createObjectStore(STORE)};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
+async function saveState(){try{const db=await openDB();await new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).put({all,requests,completed,failed,updatedAt:Date.now()},STATE_KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});db.close()}catch(e){log('端末への自動保存に失敗: '+e.message)}}
+async function loadState(){try{const db=await openDB();const s=await new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readonly');const r=tx.objectStore(STORE).get(STATE_KEY);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)});db.close();if(s){all=Array.isArray(s.all)?s.all:[];requests=Number(s.requests)||0;completed=Array.isArray(s.completed)?s.completed:[];failed=Array.isArray(s.failed)?s.failed:[];return true}}catch(e){log('保存済み進捗の読み込みに失敗: '+e.message)}return false}
+async function clearState(){const db=await openDB();await new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).delete(STATE_KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});db.close()}
+function updateUI(){const processed=new Set([...completed,...failed]).size;$('pref').textContent=`${processed}/47`;$('count').textContent=all.length.toLocaleString('ja-JP');$('req').textContent=requests;$('bar').style.width=`${(processed/47)*100}%`;const canSave=all.length>0;$('save1').disabled=!canSave;$('save2').disabled=!canSave;$('retry').style.display=failed.length?'block':'none';$('failed').style.display=failed.length?'block':'none';$('failed').textContent=failed.length?`⚠️ 未取得 ${failed.length}県: ${failed.join(', ')}`:'';$('start').textContent=processed? (processed<47?'▶ 続きから再開':'✅ 47都道府県の処理済み'):'▶ 全国取得を開始'}
 async function fetchPref(code,attempt=1){
  const q=`[out:json][timeout:90];area["ISO3166-2"="${code}"][boundary=administrative]->.a;(nwr(area.a)["amenity"~"^(restaurant|cafe|fast_food)$"]["name"];);out center tags;`;
- requests++;$('req').textContent=requests;
+ requests++;updateUI();
  try{
-   const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(q)});
+   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),110000);
+   const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(q),signal:controller.signal});clearTimeout(timer);
    if(!r.ok)throw new Error(`HTTP ${r.status}`);return await r.json();
- }catch(e){if(attempt<4){log(`${code}: ${e.message} → ${attempt*8}秒後に再試行`);await sleep(attempt*8000);return fetchPref(code,attempt+1)}throw e}
+ }catch(e){if(attempt<4){const sec=attempt*10;log(`${code}: ${e.name==='AbortError'?'タイムアウト':e.message} → ${sec}秒後に再試行`);await sleep(sec*1000);return fetchPref(code,attempt+1)}throw e}
 }
 function normalize(data){const out=[];for(const el of (data.elements||[])){const t=el.tags||{};const address=addr(t);if(!address)continue;const lat=Number(el.lat??el.center?.lat),lon=Number(el.lon??el.center?.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;out.push({id:`${el.type}/${el.id}`,name:t.name||'飲食店',type:t.amenity||'restaurant',address,openingHours:t.opening_hours||'',phone:t.phone||t['contact:phone']||'',website:t.website||t['contact:website']||'',lat,lon})}return out}
-function save(name,data){const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-$('start').onclick=async()=>{if(running)return;running=true;all=[];requests=0;$('log').textContent='取得開始';$('start').disabled=true;
- try{for(let i=0;i<prefs.length;i++){const code=prefs[i];log(`${code} を取得中…`);const d=await fetchPref(code);const rows=normalize(d);all.push(...rows);const m=new Map(all.map(x=>[x.id,x]));all=[...m.values()];$('pref').textContent=`${i+1}/47`;$('count').textContent=all.length.toLocaleString('ja-JP');$('bar').style.width=`${((i+1)/47)*100}%`;log(`${code}: ${rows.length}件 / 合計 ${all.length}件`);await sleep(1300)}
-  log('完了');$('save1').disabled=false;$('save2').disabled=false;
- }catch(e){log('エラー: '+e.message)}finally{$('start').disabled=false;running=false}}
+function mergeRows(rows){const m=new Map(all.map(x=>[x.id,x]));for(const x of rows)m.set(x.id,x);all=[...m.values()]}
+function save(name,data){const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+async function processCodes(codes,isRetry=false){if(running)return;running=true;$('start').disabled=true;$('retry').disabled=true;if(!isRetry)log('取得を開始 / 再開します');else log('失敗した県の再取得を開始します');
+ for(const code of codes){if(!isRetry && completed.includes(code))continue;log(`${code} を取得中…`);try{const d=await fetchPref(code);const rows=normalize(d);mergeRows(rows);if(!completed.includes(code))completed.push(code);failed=failed.filter(x=>x!==code);log(`${code}: ${rows.length}件 / 合計 ${all.length}件`)}catch(e){if(!failed.includes(code))failed.push(code);log(`${code}: 取得失敗 (${e.name==='AbortError'?'タイムアウト':e.message}) → スキップして次へ進みます`)}await saveState();updateUI();await sleep(1600)}
+ running=false;$('start').disabled=false;$('retry').disabled=false;updateUI();await saveState();if(failed.length){log(`一巡完了。未取得 ${failed.length}県があります。「失敗した県だけ再取得」を押してください。`)}else if(completed.length===47){log('✅ 全国47都道府県の取得が完了しました。JSONを2つとも保存してください。')}else{log('処理を終了しました。')}
+}
+$('start').onclick=async()=>{const pending=prefs.filter(c=>!completed.includes(c));if(!pending.length&&failed.length){await processCodes([...failed],true);return}if(!pending.length){log('すでに47都道府県の処理が完了しています。');return}await processCodes(pending,false)};
+$('retry').onclick=async()=>{if(!failed.length)return;await processCodes([...failed],true)};
 $('save1').onclick=()=>{const m=Math.ceil(all.length/2);save('restaurants-1.json',all.slice(0,m))};
 $('save2').onclick=()=>{const m=Math.ceil(all.length/2);save('restaurants-2.json',all.slice(m))};
+$('reset').onclick=async()=>{if(running){alert('取得中はリセットできません');return}if(!confirm('保存済みの取得進捗と飲食店データをすべて削除しますか？'))return;await clearState();all=[];requests=0;completed=[];failed=[];$('log').textContent='進捗をリセットしました';updateUI()};
+(async()=>{const ok=await loadState();$('log').textContent=ok?`保存済み進捗を復元しました（${new Set([...completed,...failed]).size}/47県、${all.length.toLocaleString('ja-JP')}件）`:'保存済み進捗はありません。全国取得を開始できます。';updateUI()})();
 </script></body></html>
